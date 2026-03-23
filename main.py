@@ -115,12 +115,3 @@ def batch_search():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
-```
-
----
-
-**requirements.txt:**
-```
-flask==3.0.0
-gunicorn==21.2.0
-yt-dlp>=2024.1.0
