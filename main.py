@@ -21,6 +21,11 @@ def search_single(query, max_results=1):
             '--ignore-errors'
         ]
         
+        # Aggiunge proxy se configurato
+        proxy = os.environ.get('PROXY_URL')
+        if proxy:
+            cmd.extend(['--proxy', proxy])
+        
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         
         if result.returncode != 0 and not result.stdout:
@@ -53,7 +58,12 @@ def search_single(query, max_results=1):
 
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({"status": "ok", "max_workers": MAX_WORKERS})
+    proxy = os.environ.get('PROXY_URL')
+    return jsonify({
+        "status": "ok",
+        "max_workers": MAX_WORKERS,
+        "proxy_configured": bool(proxy)
+    })
 
 @app.route('/search', methods=['POST'])
 def search_youtube():
@@ -129,12 +139,17 @@ def debug_search():
             '--ignore-errors'
         ]
         
+        proxy = os.environ.get('PROXY_URL')
+        if proxy:
+            cmd.extend(['--proxy', proxy])
+        
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         
         return jsonify({
             "returncode": result.returncode,
             "stdout": result.stdout[:500] if result.stdout else None,
-            "stderr": result.stderr[:500] if result.stderr else None
+            "stderr": result.stderr[:500] if result.stderr else None,
+            "proxy_used": bool(proxy)
         })
         
     except subprocess.TimeoutExpired:
