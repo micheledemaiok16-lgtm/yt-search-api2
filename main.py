@@ -113,5 +113,34 @@ def batch_search():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/debug', methods=['POST'])
+def debug_search():
+    """Debug endpoint per diagnosticare problemi yt-dlp"""
+    try:
+        data = request.json
+        query = data.get('query', 'test')
+        
+        cmd = [
+            'yt-dlp',
+            f'ytsearch1:{query}',
+            '--dump-json',
+            '--no-download',
+            '--no-warnings',
+            '--ignore-errors'
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        
+        return jsonify({
+            "returncode": result.returncode,
+            "stdout": result.stdout[:500] if result.stdout else None,
+            "stderr": result.stderr[:500] if result.stderr else None
+        })
+        
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "Timeout after 30s"})
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
