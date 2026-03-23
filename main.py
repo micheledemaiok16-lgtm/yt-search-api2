@@ -55,6 +55,22 @@ def search_single(query, max_results=1):
     except Exception as e:
         return [{"query": query, "success": False, "error": str(e)}]
 
+def _normalize_input(data):
+    """Normalizza l'input: gestisce array wrapper di n8n e tutti i formati"""
+    
+    # n8n wrappa in array: [{"queries": [...]}] -> {"queries": [...]}
+    if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
+        inner = data[0]
+        if 'queries' in inner or 'songs' in inner:
+            return inner
+    
+    # Array diretto di query: [{"query": "..."}, {"query": "..."}]
+    if isinstance(data, list):
+        return {"_direct_array": data}
+    
+    # Oggetto normale: {"queries": [...]} o {"songs": [...]}
+    return data
+
 @app.route('/health', methods=['GET'])
 def health():
     proxy = os.environ.get('PROXY_URL')
@@ -68,10 +84,11 @@ def health():
 def search_youtube():
     """Cerca video - accetta singolo oggetto o array"""
     try:
-        data = request.json
+        raw = request.json
+        data = _normalize_input(raw)
         
-        if isinstance(data, list):
-            return _process_batch(data, global_max_results=1)
+        if '_direct_array' in data:
+            return _process_batch(data['_direct_array'], global_max_results=1)
         
         query = data.get('query')
         if not query:
@@ -92,13 +109,16 @@ def search_youtube():
 def batch_search():
     """Cerca multipli video in parallelo"""
     try:
-        data = request.json
+        raw = request.json
+        data = _normalize_input(raw)
         
-        if isinstance(data, list):
-            return _process_batch(data, global_max_results=1)
+        # Array diretto
+        if '_direct_array' in data:
+            return _process_batch(data['_direct_array'], global_max_results=1)
         
         global_max_results = data.get('max_results', 1)
         
+        # Songs
         songs = data.get('songs', [])
         if songs:
             items = []
@@ -109,6 +129,7 @@ def batch_search():
                 })
             return _process_batch(items, global_max_results)
         
+        # Queries
         queries = data.get('queries', [])
         if queries:
             items = []
@@ -125,7 +146,7 @@ def batch_search():
         return jsonify({"error": str(e)}), 500
 
 def _process_batch(items, global_max_results=1):
-    """Elabora un batch di ricerche in parallelo"""
+    """Elabora un batch di ricerche in parallelo, ritorna array piatto"""
     
     if len(items) > 50:
         return jsonify({"error": "Maximum 50 queries per batch"}), 400
@@ -140,7 +161,8 @@ def _process_batch(items, global_max_results=1):
                 "max_results": item.get('max_results', global_max_results)
             })
     
-    all_results = []
+    # Raccogli risultati per query (per riordinare)
+    results_by_query = {}
     
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_item = {
@@ -151,26 +173,15 @@ def _process_batch(items, global_max_results=1):
         for future in as_completed(future_to_item):
             item = future_to_item[future]
             results = future.result()
-            all_results.append({
-                "query": item['query'],
-                "max_results": item['max_results'],
-                "videos": results
-            })
+            results_by_query[item['query']] = results
     
-    query_order = {item['query']: i for i, item in enumerate(normalized)}
-    all_results.sort(key=lambda x: query_order.get(x['query'], 999))
+    # Array piatto ordinato per query originale
+    flat_results = []
+    for item in normalized:
+        videos = results_by_query.get(item['query'], [])
+        flat_results.extend(videos)
     
-    total_found = sum(
-        sum(1 for v in r['videos'] if v.get('success'))
-        for r in all_results
-    )
-    
-    return jsonify({
-        "success": True,
-        "total_queries": len(normalized),
-        "total_found": total_found,
-        "results": all_results
-    })
+    return jsonify(flat_results)
 
 @app.route('/debug', methods=['POST'])
 def debug_search():
