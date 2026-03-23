@@ -6,52 +6,47 @@ import os
 
 app = Flask(__name__)
 
-# Pool di thread per elaborazione parallela
-MAX_WORKERS = 10  # Massimo 10 ricerche in parallelo
+MAX_WORKERS = 10
 
 def search_single(query, max_results=1):
-    """Cerca video su YouTube"""
+    """Cerca video su YouTube (ottimizzato per velocità)"""
     try:
         cmd = [
             'yt-dlp',
             f'ytsearch{max_results}:{query}',
-            '--dump-json',
+            '--flat-playlist',
+            '--dump-single-json',
             '--no-download',
             '--no-warnings',
-            '--ignore-errors'
+            '--ignore-errors',
+            '--no-check-formats',
+            '--socket-timeout', '10'
         ]
         
-        # Aggiunge proxy se configurato
         proxy = os.environ.get('PROXY_URL')
         if proxy:
             cmd.extend(['--proxy', proxy])
         
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
         
         if result.returncode != 0 and not result.stdout:
             return [{"query": query, "success": False, "error": "Search failed"}]
         
-        # Parse risultati
-        videos = []
-        for line in result.stdout.strip().split('\n'):
-            if line:
-                try:
-                    video = json.loads(line)
-                    videos.append({
-                        "query": query,
-                        "success": True,
-                        "id": video.get("id"),
-                        "title": video.get("title"),
-                        "channel": video.get("channel"),
-                        "duration": video.get("duration"),
-                        "url": f"https://www.youtube.com/watch?v={video.get('id')}",
-                        "thumbnail": video.get("thumbnail")
-                    })
-                except json.JSONDecodeError:
-                    continue
+        data = json.loads(result.stdout)
+        entries = data.get('entries', [])
         
-        if not videos:
+        if not entries:
             return [{"query": query, "success": False, "error": "No results"}]
+        
+        videos = []
+        for entry in entries:
+            vid = entry.get('id')
+            videos.append({
+                "query": query,
+                "success": True,
+                "title": entry.get('title'),
+                "url": f"https://www.youtube.com/watch?v={vid}"
+            })
         
         return videos
         
@@ -75,7 +70,6 @@ def search_youtube():
     try:
         data = request.json
         
-        # Se riceve un array, redirige a batch
         if isinstance(data, list):
             return _process_batch(data, global_max_results=1)
         
@@ -86,7 +80,6 @@ def search_youtube():
         max_results = data.get('max_results', 1)
         results = search_single(query, max_results)
         
-        # Se max_results è 1, ritorna singolo oggetto per retrocompatibilità
         if max_results == 1:
             return jsonify(results[0])
         
@@ -97,31 +90,15 @@ def search_youtube():
 
 @app.route('/batch', methods=['POST'])
 def batch_search():
-    """
-    Cerca multipli video in parallelo.
-    
-    Accetta questi formati:
-    
-    1) Array diretto (formato n8n):
-       [{"query": "...", "max_results": 3}, {"query": "..."}]
-    
-    2) Oggetto con queries:
-       {"queries": ["query1", "query2"], "max_results": 3}
-       {"queries": [{"query": "...", "max_results": 3}, ...]}
-    
-    3) Oggetto con songs:
-       {"songs": [{"artist": "...", "song": "..."}], "max_results": 3}
-    """
+    """Cerca multipli video in parallelo"""
     try:
         data = request.json
         
-        # Formato 1: Array diretto (n8n)
         if isinstance(data, list):
             return _process_batch(data, global_max_results=1)
         
         global_max_results = data.get('max_results', 1)
         
-        # Formato 3: Songs
         songs = data.get('songs', [])
         if songs:
             items = []
@@ -132,10 +109,8 @@ def batch_search():
                 })
             return _process_batch(items, global_max_results)
         
-        # Formato 2: Queries
         queries = data.get('queries', [])
         if queries:
-            # Queries può essere array di stringhe o array di oggetti
             items = []
             for q in queries:
                 if isinstance(q, str):
@@ -155,7 +130,6 @@ def _process_batch(items, global_max_results=1):
     if len(items) > 50:
         return jsonify({"error": "Maximum 50 queries per batch"}), 400
     
-    # Normalizza items: ogni elemento deve avere query e max_results
     normalized = []
     for item in items:
         if isinstance(item, str):
@@ -168,7 +142,6 @@ def _process_batch(items, global_max_results=1):
     
     all_results = []
     
-    # Elaborazione parallela
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_item = {
             executor.submit(search_single, item['query'], item['max_results']): item
@@ -184,7 +157,6 @@ def _process_batch(items, global_max_results=1):
                 "videos": results
             })
     
-    # Riordina risultati nell'ordine originale
     query_order = {item['query']: i for i, item in enumerate(normalized)}
     all_results.sort(key=lambda x: query_order.get(x['query'], 999))
     
@@ -202,7 +174,7 @@ def _process_batch(items, global_max_results=1):
 
 @app.route('/debug', methods=['POST'])
 def debug_search():
-    """Debug endpoint per diagnosticare problemi yt-dlp"""
+    """Debug endpoint"""
     try:
         data = request.json
         query = data.get('query', 'test')
@@ -210,17 +182,20 @@ def debug_search():
         cmd = [
             'yt-dlp',
             f'ytsearch1:{query}',
-            '--dump-json',
+            '--flat-playlist',
+            '--dump-single-json',
             '--no-download',
             '--no-warnings',
-            '--ignore-errors'
+            '--ignore-errors',
+            '--no-check-formats',
+            '--socket-timeout', '10'
         ]
         
         proxy = os.environ.get('PROXY_URL')
         if proxy:
             cmd.extend(['--proxy', proxy])
         
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
         
         return jsonify({
             "returncode": result.returncode,
@@ -230,7 +205,7 @@ def debug_search():
         })
         
     except subprocess.TimeoutExpired:
-        return jsonify({"error": "Timeout after 30s"})
+        return jsonify({"error": "Timeout after 15s"})
     except Exception as e:
         return jsonify({"error": str(e)})
 
